@@ -21,12 +21,14 @@ class MainActivity : ComponentActivity() {
 
             NavHost(
                 navController = navController,
-                startDestination = "login"
+                startDestination = "bienvenida"
             ) {
+                // Pantalla de bienvenida
+                composable("bienvenida") { BienvenidaScreen(navController) }
+
                 //pantalla de login inicial
-                composable("login") {
-                    LoginScreen(navController)
-                }
+                composable("login") {LoginScreen(navController) }
+
                 //pantalla principal de navegacion inferior
                 composable("main") {
                     MainScaffold()
