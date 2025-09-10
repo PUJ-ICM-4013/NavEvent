@@ -37,7 +37,7 @@ fun BienvenidaScreen(navController: NavHostController) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(24.dp)
             ) {
-                // Título NavEvent
+                //título NavEvent
                 Text(
                     text = "NavEvent",
                     fontSize = 36.sp,
@@ -46,7 +46,7 @@ fun BienvenidaScreen(navController: NavHostController) {
                     letterSpacing = 1.sp
                 )
 
-                // Círculo (placeholder de logo/imagen)
+                //circulo (placeholder de logo/imagen)
                 Box(
                     modifier = Modifier
                         .size(180.dp)
@@ -54,7 +54,7 @@ fun BienvenidaScreen(navController: NavHostController) {
                         .background(Color(0xFFD9D9D9))
                 )
 
-                // Frase
+                //frase
                 Text(
                     text = "\"\"Eventos que fluyen contigo.\"\"",
                     color = Color.White,
@@ -65,7 +65,7 @@ fun BienvenidaScreen(navController: NavHostController) {
 
                 Spacer(Modifier.height(12.dp))
 
-                // Botón Iniciar Sesión
+                //boton Iniciar Sesión
                 Button(
                     onClick = { navController.navigate("login") },
                     shape = CircleShape,
@@ -73,7 +73,7 @@ fun BienvenidaScreen(navController: NavHostController) {
                     Text("Iniciar Sesión", color = Color.White)
                 }
 
-                // Enlace crear cuenta
+                //enlace crear cuenta
                 val annotated = buildAnnotatedString {
                     append("¿No tienes cuenta? ")
                     val tag = "crear"
