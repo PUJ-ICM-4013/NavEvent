@@ -14,8 +14,12 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        val mapsKey = (project.findProperty("MAPS_API_KEY") as? String) ?: ""
+        manifestPlaceholders["MAPS_API_KEY"] = mapsKey
+        vectorDrawables {
+            useSupportLibrary = true
+        }
     }
 
     buildTypes {
@@ -53,6 +57,7 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.ui.text)
     implementation(libs.androidx.foundation)
+    implementation(libs.androidx.appcompat.resources)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -66,6 +71,7 @@ dependencies {
     implementation("com.google.android.gms:play-services-maps:18.2.0")
     // Ubicación
     implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     //QR
     implementation("com.google.zxing:core:3.5.3")
     // Permisos en Compose
