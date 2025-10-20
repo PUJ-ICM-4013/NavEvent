@@ -1,56 +1,104 @@
 package com.example.naveventapp.data
 
 import com.google.android.gms.maps.model.LatLng
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 import kotlin.math.*
 
-object DirectionsService {
-    private val client = OkHttpClient()
+data class RouteResult(
+    val points: List<LatLng>,
+    val distanceMeters: Int,
+    val durationSeconds: Int,
+    val distanceText: String,
+    val durationText: String
+)
 
-    /**
-     * Llama a Directions API (modo walking por defecto) y retorna la lista de puntos de la polyline
-     * del overview (suficiente para pintar la ruta).
-     */
-    fun fetchRoutePolyline(
+object DirectionsService {
+    private val client by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .build()
+    }
+
+    suspend fun fetchRoute(
         origin: LatLng,
         destination: LatLng,
         apiKey: String,
         mode: String = "walking"
-    ): List<LatLng> {
-        val url =
-            "https://maps.googleapis.com/maps/api/directions/json" +
-                    "?origin=${origin.latitude},${origin.longitude}" +
-                    "&destination=${destination.latitude},${destination.longitude}" +
-                    "&mode=$mode&key=$apiKey"
+    ): RouteResult? = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) return@withContext null
 
-        val req = Request.Builder().url(url).build()
-        client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return emptyList()
-            val body = resp.body?.string() ?: return emptyList()
+        fun LatLng.asParam(): String =
+            "%.${6}f,%.${
+                6
+            }f".format(locale = java.util.Locale.US, latitude, longitude)
 
-            val root = JSONObject(body)
-            val routes = root.optJSONArray("routes") ?: return emptyList()
-            if (routes.length() == 0) return emptyList()
-
-            val route = routes.getJSONObject(0)
-            val overview = route.optJSONObject("overview_polyline") ?: return emptyList()
-            val encoded = overview.optString("points", "")
-            if (encoded.isBlank()) return emptyList()
-
-            return decodePolyline(encoded)
+        val url = buildString {
+            append("https://maps.googleapis.com/maps/api/directions/json?")
+            append("origin=").append(URLEncoder.encode(origin.asParam(), "UTF-8"))
+            append("&destination=").append(URLEncoder.encode(destination.asParam(), "UTF-8"))
+            append("&mode=").append(mode)
+            append("&alternatives=false")
+            append("&key=").append(apiKey)
         }
+
+        runCatching {
+            client.newCall(Request.Builder().url(url).build()).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val body = resp.body?.string().orEmpty()
+                if (body.isBlank()) return@withContext null
+
+                val root = JSONObject(body)
+                if (root.optString("status") != "OK") return@withContext null
+
+                val routes = root.optJSONArray("routes") ?: return@withContext null
+                if (routes.length() == 0) return@withContext null
+
+                val route0 = routes.getJSONObject(0)
+                val legs = route0.optJSONArray("legs")
+                val leg0 = legs?.optJSONObject(0)
+
+                val distObj = leg0?.optJSONObject("distance")
+                val durObj  = leg0?.optJSONObject("duration")
+
+                val distanceMeters = distObj?.optInt("value") ?: 0
+                val durationSeconds = durObj?.optInt("value") ?: 0
+                val distanceText = distObj?.optString("text").orEmpty()
+                val durationText = durObj?.optString("text").orEmpty()
+
+                val encoded = route0
+                    .optJSONObject("overview_polyline")
+                    ?.optString("points")
+                    .orEmpty()
+
+                val points = if (encoded.isBlank()) listOf(origin, destination) else decodePolyline(encoded)
+                RouteResult(points, distanceMeters, durationSeconds, distanceText, durationText)
+            }
+        }.getOrNull()
     }
 
-    /** Decodificador estándar de Google Polyline (no requiere libs extra). */
+    // --- Tu versión suspend de solo polyline sigue como estaba ---
+    suspend fun fetchRoutePolyline(
+        origin: LatLng,
+        destination: LatLng,
+        apiKey: String,
+        mode: String = "walking"
+    ): List<LatLng> = fetchRoute(origin, destination, apiKey, mode)?.points ?: emptyList()
+
+    // Decodificador igual al que ya tienes
     private fun decodePolyline(encoded: String): List<LatLng> {
         val poly = ArrayList<LatLng>()
         var index = 0
         val len = encoded.length
         var lat = 0
         var lng = 0
-
         while (index < len) {
             var b: Int
             var shift = 0

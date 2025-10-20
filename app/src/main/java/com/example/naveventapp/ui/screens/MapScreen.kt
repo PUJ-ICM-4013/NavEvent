@@ -3,6 +3,7 @@ package com.example.naveventapp.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -12,35 +13,44 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.naveventapp.data.DirectionsService
 import com.example.naveventapp.ui.components.BottomBar
+import com.example.naveventapp.ui.location.LocationTracker
+import com.example.naveventapp.ui.location.LegendBar
 import com.example.naveventapp.ui.permissions.rememberLocationPermission
 import com.example.naveventapp.ui.theme.*
-import com.example.naveventapp.ui.location.LocationTracker
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.maps.android.compose.*
 import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.BitmapDescriptorFactory
-import com.example.naveventapp.ui.location.LegendBar
+import com.google.android.gms.maps.model.*
+import com.google.maps.android.compose.*
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import com.google.android.gms.maps.model.BitmapDescriptor
+import kotlinx.coroutines.launch
 
-private enum class PoiKind { STAND, BANO, ENTRADA, RESTAURANTE, INFO }
-
-private fun hueFor(kind: PoiKind): Float = when (kind) {
-    PoiKind.STAND       -> BitmapDescriptorFactory.HUE_VIOLET
-    PoiKind.BANO        -> BitmapDescriptorFactory.HUE_GREEN
-    PoiKind.ENTRADA     -> BitmapDescriptorFactory.HUE_ORANGE
-    PoiKind.RESTAURANTE -> BitmapDescriptorFactory.HUE_YELLOW
-    PoiKind.INFO        -> BitmapDescriptorFactory.HUE_CYAN
+private fun distMeters(a: LatLng, b: LatLng): Float {
+    val out = FloatArray(1)
+    android.location.Location.distanceBetween(a.latitude, a.longitude, b.latitude, b.longitude, out)
+    return out[0]
 }
 
-private fun iconFor(kind: PoiKind): BitmapDescriptor =
-    BitmapDescriptorFactory.defaultMarker(hueFor(kind))
+/** índice del punto de la ruta (route) más cercano a "pos". Si route está vacío, -1 */
+private fun nearestIndexOnRoute(route: List<LatLng>, pos: LatLng): Int {
+    if (route.isEmpty()) return -1
+    var bestIdx = 0
+    var best = Float.MAX_VALUE
+    for (i in route.indices) {
+        val d = distMeters(route[i], pos)
+        if (d < best) { best = d; bestIdx = i }
+    }
+    return bestIdx
+}
 
-private fun randomAround(center: LatLng, dx: Double, dy: Double) =
-    LatLng(center.latitude + dy, center.longitude + dx)
+/** recorta la ruta para mostrar solo desde tu pos hasta el final */
+private fun remainingRouteFromPos(pos: LatLng, full: List<LatLng>): List<LatLng> {
+    if (full.size < 2) return emptyList()
+    val idx = nearestIndexOnRoute(full, pos)
+    val tail = if (idx in full.indices) full.drop(idx) else full
+    // preponer la ubicación actual para que el primer tramo sea real
+    return listOf(pos) + tail
+}
 
 @Composable
 fun MapScreen(
@@ -50,76 +60,99 @@ fun MapScreen(
     onBellClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val apiKey = getMapsApiKey(context)
+    val scope = rememberCoroutineScope()
 
+    // 1) Ubicación actual y permiso
     val myLocationEnabled = rememberLocationPermission()
-
     val currentLatLng by produceState<LatLng?>(initialValue = null, key1 = myLocationEnabled) {
         if (myLocationEnabled) {
             LocationTracker.locationFlow(context).collect { value = it }
-        } else {
-            value = null
-        }
+        } else value = null
     }
 
+    // 2) Cámara
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(4.5981, -74.0760), 16f)
     }
 
-    var selectedLatLng by remember { mutableStateOf<LatLng?>(null) }
-
-    // Estado para la polyline de Directions
-    var routePoints by remember { mutableStateOf<List<LatLng>>(emptyList()) }
+    // 3) Estados de routing
+    var destination by remember { mutableStateOf<LatLng?>(null) }
+    var route by remember { mutableStateOf<List<LatLng>>(emptyList()) }
+    var routeSummary by remember { mutableStateOf<Pair<String, String>?>(null) } // (distancia, duración)
     var isLoadingRoute by remember { mutableStateOf(false) }
-
-    val baseCenter = currentLatLng ?: LatLng(4.5981, -74.0760)
-
-    val poiMarkers by remember(baseCenter) {
-        mutableStateOf(
-            buildList {
-                val deltas = listOf(
-                    0.0004 to 0.0002, -0.0003 to 0.0001, 0.0002 to -0.00025,
-                    -0.00015 to -0.0002, 0.00035 to 0.00015
-                )
-                // Stands (3)
-                addAll(List(3) { PoiKind.STAND to randomAround(baseCenter, deltas[it % deltas.size].first, deltas[it % deltas.size].second) })
-                // Baños (2)
-                addAll(List(2) { PoiKind.BANO to randomAround(baseCenter, deltas[(it+1) % deltas.size].first, -deltas[(it+1) % deltas.size].second) })
-                // Entradas/Salidas (2)
-                addAll(List(2) { PoiKind.ENTRADA to randomAround(baseCenter, -deltas[(it+2) % deltas.size].first, deltas[(it+2) % deltas.size].second) })
-                // Restaurantes (2)
-                addAll(List(2) { PoiKind.RESTAURANTE to randomAround(baseCenter, deltas[(it+3) % deltas.size].first, deltas[(it+3) % deltas.size].second) })
-                // Info (1)
-                add(PoiKind.INFO to randomAround(baseCenter, 0.0001, -0.0001))
-            }
-        )
-    }
+    var hasCenteredOnUser by remember { mutableStateOf(false) }
+    var followUser by remember { mutableStateOf(false) }
 
     LaunchedEffect(currentLatLng) {
-        currentLatLng?.let { here ->
-            cameraPositionState.animate(
-                update = CameraUpdateFactory.newLatLngZoom(here, 17f)
-            )
+        if (!hasCenteredOnUser) {
+            currentLatLng?.let { here ->
+                cameraPositionState.animate(
+                    update = CameraUpdateFactory.newLatLngZoom(here, 17f),
+                    durationMs = 600
+                )
+                hasCenteredOnUser = true  // 👈 no volver a centrar automáticamente
+            }
         }
     }
 
-    // cuando ambos puntos existen, pedimos la ruta real
-    LaunchedEffect(currentLatLng, selectedLatLng) {
+    LaunchedEffect(destination, currentLatLng) {
         val origin = currentLatLng
-        val dest = selectedLatLng
+        val dest = destination
         if (origin != null && dest != null && apiKey.isNotBlank()) {
             isLoadingRoute = true
-            routePoints = emptyList()
-            routePoints = runCatching {
-                DirectionsService.fetchRoutePolyline(origin, dest, apiKey, mode = "walking")
-            }.getOrDefault(emptyList())
+            val result = runCatching {
+                DirectionsService.fetchRoute(origin, dest, apiKey, mode = "walking")
+            }.getOrNull()
+
+            // si falla Directions, nos quedamos con la recta que pusimos en onMapClick
+            if (result != null && result.points.size >= 2) {
+                // guarda la ruta COMPLETA (sin recortar)
+                route = result.points
+                // si quieres encuadrar de una, descomenta:
+                // fitToRoute(result.points)
+            }
             isLoadingRoute = false
-        } else {
-            routePoints = emptyList()
         }
     }
 
+    // recorte dinámico según te mueves (sin volver a llamar Directions)
+    LaunchedEffect(currentLatLng) {
+        val origin = currentLatLng
+        val dest = destination
+        if (origin != null && dest != null) {
+            // si aún no hay ruta Directions, al menos mantén la recta:
+            if (route.size >= 2) {
+                // recorta la ruta para mostrar tramo restante
+                val remaining = remainingRouteFromPos(origin, route)
+                // OJO: si remaining termina muy pegado al destino, mantenlo (2 puntos)
+                if (remaining.size >= 2) {
+                    // pintamos el tramo restante
+                    route = remaining
+                } else {
+                    // mínimo línea recta como fallback
+                    route = listOf(origin, dest)
+                }
+            } else {
+                route = listOf(origin, dest)
+            }
+        }
+    }
+
+    // efecto que mueve la cámara SOLO si followUser está activo
+    LaunchedEffect(currentLatLng, followUser) {
+        if (followUser && currentLatLng != null) {
+            cameraPositionState.move(CameraUpdateFactory.newLatLng(currentLatLng!!))
+        }
+    }
+
+    fun clearRoute() {
+        destination = null
+        route = emptyList()
+        routeSummary = null
+    }
+
+    // 7) UI
     Box(
         Modifier
             .fillMaxSize()
@@ -139,7 +172,9 @@ fun MapScreen(
                 GoogleMap(
                     modifier = Modifier.fillMaxSize(),
                     cameraPositionState = cameraPositionState,
-                    properties = MapProperties(isMyLocationEnabled = myLocationEnabled),
+                    properties = MapProperties(
+                        isMyLocationEnabled = myLocationEnabled && currentLatLng != null
+                    ),
                     uiSettings = MapUiSettings(
                         zoomControlsEnabled = true,
                         compassEnabled = true,
@@ -150,41 +185,42 @@ fun MapScreen(
                         tiltGesturesEnabled = true,
                     ),
                     onMapClick = { latLng ->
-                        routePoints = emptyList()
-                        selectedLatLng = latLng
+                        //Click fija destino
+                        destination = latLng
+                        followUser = true
+                        currentLatLng?.let { here ->
+                            route = listOf(here, latLng)
+                        }
+
+                        // centrar cámara en el destino
+                        scope.launch {
+                            cameraPositionState.animate(
+                                update = CameraUpdateFactory.newLatLngZoom(latLng, 17f),
+                                durationMs = 450
+                            )
+                        }
+                    },
+                    onMapLongClick = {
+                        // Long press para limpiar (opcional)
+                        clearRoute()
                     }
                 ) {
-                    currentLatLng?.let {
+                    // Destino (rojo)
+                    destination?.let {
                         Marker(
                             state = MarkerState(position = it),
-                            title = "Mi ubicación",
-                            snippet = "Tu ubicación actual",
-                            icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_AZURE) // azul
-                        )
-                    }
-                    selectedLatLng?.let {
-                        Marker(state = MarkerState(position = it), title = "Destino", snippet = "Punto seleccionado")
-                    }
-
-                    poiMarkers.forEach { (kind, pos) ->
-                        Marker(
-                            state = MarkerState(position = pos),
-                            title = when (kind) {
-                                PoiKind.STAND       -> "Stand"
-                                PoiKind.BANO        -> "Baños"
-                                PoiKind.ENTRADA     -> "Entrada/Salida"
-                                PoiKind.RESTAURANTE -> "Restaurante"
-                                PoiKind.INFO        -> "Información"
-                            },
-                            icon = iconFor(kind)
+                            title = "Destino",
+                            icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED)
                         )
                     }
 
-                    if (routePoints.isNotEmpty()) {
-                        Polyline(points = routePoints, width = 10f, color = Vinotinto)
+                    // Polyline de la ruta
+                    if (route.isNotEmpty()) {
+                        Polyline(points = route, width = 10f, color = Vinotinto, zIndex = 2f)
                     }
                 }
 
+                // Loading
                 if (isLoadingRoute) {
                     CircularProgressIndicator(
                         color = Vinotinto,
@@ -193,9 +229,32 @@ fun MapScreen(
                             .padding(top = 8.dp)
                     )
                 }
+
+                // Resumen ruta (distancia — duración) + limpiar
+                routeSummary?.let { (dist, dur) ->
+                    Surface(
+                        tonalElevation = 4.dp,
+                        shape = MaterialTheme.shapes.medium,
+                        color = Blanco.copy(alpha = 0.92f),
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("$dist — $dur", color = Negro)
+                            Spacer(Modifier.width(12.dp))
+                            IconButton(onClick = { clearRoute() }) {
+                                Icon(Icons.Default.Close, contentDescription = "Limpiar", tint = Vinotinto)
+                            }
+                        }
+                    }
+                }
             }
 
-            // Leyenda desde ui/poi
+            // (Opcional) Tu leyenda de POI u otros componentes
             LegendBar(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -204,6 +263,7 @@ fun MapScreen(
             )
         }
 
+        // Campana
         IconButton(
             onClick = onBellClick,
             modifier = Modifier
@@ -214,6 +274,7 @@ fun MapScreen(
             Icon(Icons.Filled.Notifications, contentDescription = "Notificaciones", tint = Vinotinto)
         }
 
+        // Bottom bar
         BottomBar(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -226,7 +287,6 @@ fun MapScreen(
     }
 }
 
-
 private fun getMapsApiKey(context: Context): String {
     return try {
         val ai: ApplicationInfo = context.packageManager.getApplicationInfo(
@@ -238,5 +298,6 @@ private fun getMapsApiKey(context: Context): String {
         ""
     }
 }
+
 
 

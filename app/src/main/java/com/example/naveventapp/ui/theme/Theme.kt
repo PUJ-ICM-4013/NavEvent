@@ -13,6 +13,8 @@ import com.example.naveventapp.R
 val Vinotinto = Color(0xFF7E0E0E)
 val GrisOscuro = Color(0xFF404040)
 val Blanco = Color(0xFFFFFFFF)
+val Negro = Color(0xFF000000)
+
 
 // Fuentes locales (res/font/*.ttf)
 private val Cutive = FontFamily(
