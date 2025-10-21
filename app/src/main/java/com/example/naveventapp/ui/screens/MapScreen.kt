@@ -189,9 +189,9 @@ fun MapScreen(
             Poi(poiLegend[0], SphericalUtil.computeOffset(venueCenter,  90.0, 135.0), "Stand B"),
             Poi(poiLegend[0], SphericalUtil.computeOffset(venueCenter, 120.0, 280.0), "Stand C"),
             // BAÑOS
-            Poi(poiLegend[1], SphericalUtil.computeOffset(venueCenter,  70.0,   0.0), "Baño Norte"),
+            Poi(poiLegend[1], SphericalUtil.computeOffset(venueCenter,  110.0,   180.0), "Baño Norte"),
             // ENTRADA / SALIDA
-            Poi(poiLegend[2], SphericalUtil.computeOffset(venueCenter, 110.0, 180.0), "Entrada Principal"),
+            Poi(poiLegend[2], SphericalUtil.computeOffset(venueCenter, 70.0, 0.0), "Entrada Principal"),
             // RESTAURANTE
             Poi(poiLegend[3], SphericalUtil.computeOffset(venueCenter, 130.0, 260.0), "Restaurante 1"),
             // INFO
@@ -204,6 +204,14 @@ fun MapScreen(
     var activeTypes by remember { mutableStateOf<Set<String>>(emptySet()) }
     fun toggleType(title: String) {
         activeTypes = if (title in activeTypes) activeTypes - title else activeTypes + title
+    }
+
+    // POI seleccionado para trazar línea recta desde tu ubicación
+    var selectedPoi by remember { mutableStateOf<Poi?>(null) }
+
+// Si apagas un tipo en la leyenda y el POI seleccionado pertenece a ese tipo, limpia la selección
+    LaunchedEffect(activeTypes) {
+        if (selectedPoi?.type?.title !in activeTypes) selectedPoi = null
     }
 
     // ====== UI ======
@@ -240,14 +248,8 @@ fun MapScreen(
                         tiltGesturesEnabled = true,
                     ),
                     onMapClick = { latLng ->
+                        selectedPoi = null
                         destination = latLng
-                        // centrar cámara en el destino
-                        scope.launch {
-                            cameraPositionState.animate(
-                                update = CameraUpdateFactory.newLatLngZoom(latLng, 17f),
-                                durationMs = 450
-                            )
-                        }
                         // calcular ruta si hay origen
                         val origin = currentLatLng
                         if (origin != null && webApiKey.isNotBlank()) {
@@ -257,13 +259,13 @@ fun MapScreen(
                         }
                     },
                     onMapLongClick = {
+                        selectedPoi = null
                         //Limpia destino y ruta con un long-press
                         destination = null
                         routePoints = emptyList()
                     },
-
                 ) {
-                    // Polyline de la ruta (verde)
+                    // Polyline de la ruta
                     if (routePoints.size >= 2) {
                         Polyline(
                             points = routePoints,
@@ -273,18 +275,37 @@ fun MapScreen(
                         )
                     }
 
-                    defaultPois.filter { poi -> poi.type.title in activeTypes }
+                    defaultPois
+                        .filter { poi -> poi.type.title in activeTypes }
                         .forEach { poi ->
+                            val markerState = remember(poi) { MarkerState(position = poi.position) }
+
                             Marker(
-                                state = MarkerState(position = poi.position),
-                                title = poi.label ?: poi.type.title,
-                                snippet = poi.type.title,
+                                state = markerState,
+                                // ⚠️ Evita InfoWindow por ahora (algunas builds crashean con title/snippet)
+                                // title = poi.label ?: poi.type.title,
+                                // snippet = poi.type.title,
                                 icon = BitmapDescriptorFactory.defaultMarker(poi.type.color.asHue()),
-                                onClick = { _ ->
-                                    false               // devuelve false si quieres que también muestre el InfoWindow
+                                onClick = {
+                                    // Solo seleccionamos si ya tenemos ubicación
+                                    if (currentLatLng != null) {
+                                        selectedPoi = poi
+                                    }
+                                    true // ✅ consumimos el evento → NO abre InfoWindow
                                 }
                             )
                         }
+
+                    val here = currentLatLng
+                    val poiSel = selectedPoi
+                    if (here != null && poiSel != null) {
+                        Polyline(
+                            points = listOf(here, poiSel.position),
+                            width = 12f, // más gruesa
+                            color = Color(0xFF0D47A1), // azul fuerte
+                            geodesic = true
+                        )
+                    }
 
                     // Destino (rojo)
                     destination?.let {
@@ -295,7 +316,6 @@ fun MapScreen(
                         )
                     }
                 }
-
 
                 // Overlay de brújula
                 CompassOverlay(
