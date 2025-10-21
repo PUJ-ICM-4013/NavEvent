@@ -1,6 +1,12 @@
 package com.example.naveventapp.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.toArgb
+import com.example.naveventapp.ui.location.LegendBar
+import com.example.naveventapp.ui.location.Poi
+import com.example.naveventapp.ui.location.poiLegend
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
+import com.google.android.gms.maps.model.LatLng
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Notifications
@@ -13,7 +19,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.naveventapp.ui.components.BottomBar
 import com.example.naveventapp.ui.location.LocationTracker
-import com.example.naveventapp.ui.location.LegendBar
 import com.example.naveventapp.ui.permissions.rememberLocationPermission
 import com.example.naveventapp.ui.theme.*
 import com.example.naveventapp.sensors.isNightModeFlow
@@ -23,12 +28,18 @@ import com.example.naveventapp.ui.components.CompassOverlay
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.MapStyleOptions
 import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.*
+import com.google.maps.android.SphericalUtil
 import com.google.maps.android.compose.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import com.example.naveventapp.data.DirectionsService
 import com.example.naveventapp.utils.getMetaDataValue
+
+private fun Color.asHue(): Float {
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(this.toArgb(), hsv)
+    return hsv[0] // hue
+}
 
 @Composable
 fun MapScreen(
@@ -141,6 +152,60 @@ fun MapScreen(
         }
     }
 
+    //Poi Y sus localizaciones en el mapa
+    var lockedCenter by remember { mutableStateOf<LatLng?>(null) }
+    val fallbackBogota = LatLng(4.5981, -74.0760)
+    val moveThresholdMeters = 2000.0
+
+    LaunchedEffect(currentLatLng) {
+        if (lockedCenter == null && currentLatLng != null) {
+            lockedCenter = currentLatLng
+        }
+    }
+
+    LaunchedEffect(currentLatLng, lockedCenter) {
+        val here = currentLatLng
+        val center = lockedCenter
+        if (here != null && center != null) {
+            val d = SphericalUtil.computeDistanceBetween(here, center)
+            if (d > moveThresholdMeters) {
+                lockedCenter = here
+                // Opcional: encuadrar nuevamente para ver POIs alrededor del nuevo centro
+                cameraPositionState.animate(
+                    update = CameraUpdateFactory.newLatLngZoom(here, 17f),
+                    durationMs = 500
+                )
+            }
+        }
+    }
+
+    val venueCenter: LatLng = lockedCenter ?: currentLatLng ?: fallbackBogota
+
+    // Lista de POIs (ejemplo; cambia coordenadas por las reales)
+    val defaultPois: List<Poi> = remember(venueCenter) {
+        listOf(
+            // STANDS: aumentamos distancias (en metros) y añadimos uno más
+            Poi(poiLegend[0], SphericalUtil.computeOffset(venueCenter,  60.0,  45.0), "Stand A"),
+            Poi(poiLegend[0], SphericalUtil.computeOffset(venueCenter,  90.0, 135.0), "Stand B"),
+            Poi(poiLegend[0], SphericalUtil.computeOffset(venueCenter, 120.0, 280.0), "Stand C"),
+            // BAÑOS
+            Poi(poiLegend[1], SphericalUtil.computeOffset(venueCenter,  70.0,   0.0), "Baño Norte"),
+            // ENTRADA / SALIDA
+            Poi(poiLegend[2], SphericalUtil.computeOffset(venueCenter, 110.0, 180.0), "Entrada Principal"),
+            // RESTAURANTE
+            Poi(poiLegend[3], SphericalUtil.computeOffset(venueCenter, 130.0, 260.0), "Restaurante 1"),
+            // INFO
+            Poi(poiLegend[4], SphericalUtil.computeOffset(venueCenter,  90.0,  90.0), "Punto de Información")
+        )
+    }
+
+// Filtro por tipo (para activar/desactivar desde la leyenda)
+    //  Por defecto: ningún tipo activo (leyenda desactivada)
+    var activeTypes by remember { mutableStateOf<Set<String>>(emptySet()) }
+    fun toggleType(title: String) {
+        activeTypes = if (title in activeTypes) activeTypes - title else activeTypes + title
+    }
+
     // ====== UI ======
     Box(
         Modifier
@@ -195,7 +260,8 @@ fun MapScreen(
                         //Limpia destino y ruta con un long-press
                         destination = null
                         routePoints = emptyList()
-                    }
+                    },
+
                 ) {
                     // Polyline de la ruta (verde)
                     if (routePoints.size >= 2) {
@@ -206,6 +272,20 @@ fun MapScreen(
                             geodesic = true
                         )
                     }
+
+                    defaultPois.filter { poi -> poi.type.title in activeTypes }
+                        .forEach { poi ->
+                            Marker(
+                                state = MarkerState(position = poi.position),
+                                title = poi.label ?: poi.type.title,
+                                snippet = poi.type.title,
+                                icon = BitmapDescriptorFactory.defaultMarker(poi.type.color.asHue()),
+                                onClick = { _ ->
+                                    false               // devuelve false si quieres que también muestre el InfoWindow
+                                }
+                            )
+                        }
+
                     // Destino (rojo)
                     destination?.let {
                         Marker(
@@ -215,6 +295,7 @@ fun MapScreen(
                         )
                     }
                 }
+
 
                 // Overlay de brújula
                 CompassOverlay(
@@ -227,12 +308,14 @@ fun MapScreen(
                 )
             }
 
-            // Leyenda u otros componentes
             LegendBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Blanco.copy(alpha = 0.95f))
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                items = poiLegend,
+                selected = activeTypes,
+                onToggle = ::toggleType
             )
         }
 

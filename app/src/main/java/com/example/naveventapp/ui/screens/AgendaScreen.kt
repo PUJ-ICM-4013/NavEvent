@@ -57,7 +57,7 @@ fun AgendaScreen(
             Text("Agenda", style = MaterialTheme.typography.headlineSmall, color = Color.Black)
             Spacer(Modifier.height(12.dp))
 
-            // ⬇️ Lista con índice para alternar estilos
+            // Lista con índice para alternar estilos
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 16.dp),
