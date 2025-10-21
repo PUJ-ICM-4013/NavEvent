@@ -17,6 +17,9 @@ import com.example.naveventapp.ui.location.LocationTracker
 import com.example.naveventapp.ui.location.LegendBar
 import com.example.naveventapp.ui.permissions.rememberLocationPermission
 import com.example.naveventapp.ui.theme.*
+import com.example.naveventapp.sensors.isNightModeFlow
+import com.example.naveventapp.R
+import com.google.android.gms.maps.model.MapStyleOptions
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.*
 import com.google.maps.android.compose.*
@@ -63,6 +66,20 @@ fun MapScreen(
     val context = LocalContext.current
     val apiKey = getWebApiKey(context)   // ← usa la WEB_API_KEY (Directions/Roads)
     val scope = rememberCoroutineScope()
+
+    val isNight by isNightModeFlow(context).collectAsState(initial = false)
+
+// Carga el estilo del mapa según el estado
+    val mapStyleOptions = remember(isNight) {
+        try {
+            MapStyleOptions.loadRawResourceStyle(
+                context,
+                if (isNight) R.raw.map_style_night else R.raw.map_style_day
+            )
+        } catch (_: Exception) {
+            null // si falla la carga, sin estilo
+        }
+    }
 
 // 1) Ubicación actual y permiso
     val myLocationEnabled = rememberLocationPermission()
@@ -193,6 +210,7 @@ fun MapScreen(
                     modifier = Modifier.fillMaxSize(),
                     cameraPositionState = cameraPositionState,
                     properties = MapProperties(
+                        mapStyleOptions = mapStyleOptions,
                         isMyLocationEnabled = myLocationEnabled && currentLatLng != null
                     ),
                     uiSettings = MapUiSettings(
