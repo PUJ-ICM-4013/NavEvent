@@ -19,6 +19,9 @@ import com.example.naveventapp.ui.permissions.rememberLocationPermission
 import com.example.naveventapp.ui.theme.*
 import com.example.naveventapp.sensors.isNightModeFlow
 import com.example.naveventapp.R
+import com.example.naveventapp.sensors.compassAzimuthFlow
+import com.example.naveventapp.ui.components.CompassOverlay
+import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.MapStyleOptions
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.*
@@ -68,7 +71,6 @@ fun MapScreen(
     val scope = rememberCoroutineScope()
 
     val isNight by isNightModeFlow(context).collectAsState(initial = false)
-
 // Carga el estilo del mapa según el estado
     val mapStyleOptions = remember(isNight) {
         try {
@@ -92,6 +94,40 @@ fun MapScreen(
 // 2) Cámara
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(4.5981, -74.0760), 16f)
+    }
+
+    // Sensor Brujula
+    var autoRotate by remember { mutableStateOf(false) }
+
+    // Azimuth: solo lo coleccionamos siempre (barato), tú decides si aplicarlo con "autoRotate"
+    val azimuth by remember(context) {
+        compassAzimuthFlow(context)
+    }.collectAsState(initial = 0f)
+
+    // Throttle simple para no spamear animaciones
+    var lastAppliedBearing by remember { mutableStateOf<Float?>(null) }
+    val BEARING_THRESHOLD_DEG = 5f
+
+    // Aplica la rotación de cámara cuando autoRotate está ON y cambie el rumbo “lo suficiente”
+    LaunchedEffect(autoRotate, azimuth) {
+        if (!autoRotate) return@LaunchedEffect
+        val currentBearing = azimuth
+        val last = lastAppliedBearing
+        val delta = if (last == null) 360f else kotlin.math.abs(currentBearing - last)
+        if (last == null || delta >= BEARING_THRESHOLD_DEG) {
+            val current = cameraPositionState.position
+            val newCam = CameraPosition(
+                /* target = */ current.target,
+                /* zoom   = */ current.zoom,
+                /* tilt   = */ current.tilt,
+                /* bearing*/ currentBearing
+            )
+            cameraPositionState.animate(
+                update = CameraUpdateFactory.newCameraPosition(newCam),
+                durationMs = 180
+            )
+            lastAppliedBearing = currentBearing
+        }
     }
 
 // 3) Estados de routing
@@ -242,6 +278,7 @@ fun MapScreen(
                         // Long press para limpiar (opcional)
                         clearRoute()
                     }
+
                 ) {
                     // Destino (rojo)
                     destination?.let {
@@ -257,6 +294,15 @@ fun MapScreen(
                         Polyline(points = route, width = 10f, color = Vinotinto, zIndex = 2f)
                     }
                 }
+
+                CompassOverlay(
+                    azimuthDeg = azimuth,
+                    autoRotate = autoRotate,
+                    onToggleAutoRotate = { autoRotate = it },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 64.dp, end = 12.dp)
+                )
 
                 // Loading
                 if (isLoadingRoute) {
@@ -322,18 +368,6 @@ fun MapScreen(
             onQr = onNavQr,
             onProfile = onNavProfile
         )
-    }
-}
-
-private fun getMapsApiKey(context: Context): String {
-    return try {
-        val ai: ApplicationInfo = context.packageManager.getApplicationInfo(
-            context.packageName,
-            PackageManager.GET_META_DATA
-        )
-        ai.metaData.getString("com.google.android.geo.API_KEY") ?: ""
-    } catch (_: Exception) {
-        ""
     }
 }
 
