@@ -59,11 +59,12 @@ fun MapScreen(
     onNavProfile: () -> Unit = {},
     onBellClick: () -> Unit = {}
 ) {
+    // --- claves y scope ---
     val context = LocalContext.current
-    val apiKey = getMapsApiKey(context)
+    val apiKey = getWebApiKey(context)   // ← usa la WEB_API_KEY (Directions/Roads)
     val scope = rememberCoroutineScope()
 
-    // 1) Ubicación actual y permiso
+// 1) Ubicación actual y permiso
     val myLocationEnabled = rememberLocationPermission()
     val currentLatLng by produceState<LatLng?>(initialValue = null, key1 = myLocationEnabled) {
         if (myLocationEnabled) {
@@ -71,19 +72,26 @@ fun MapScreen(
         } else value = null
     }
 
-    // 2) Cámara
+// 2) Cámara
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(4.5981, -74.0760), 16f)
     }
 
-    // 3) Estados de routing
+// 3) Estados de routing
     var destination by remember { mutableStateOf<LatLng?>(null) }
-    var route by remember { mutableStateOf<List<LatLng>>(emptyList()) }
-    var routeSummary by remember { mutableStateOf<Pair<String, String>?>(null) } // (distancia, duración)
+    var route by remember { mutableStateOf<List<LatLng>>(emptyList()) }           // tramo mostrado
+    var fullRoute by remember { mutableStateOf<List<LatLng>>(emptyList()) }       // ruta completa (no recortada)
+    var routeSummary by remember { mutableStateOf<Pair<String, String>?>(null) }  // (distancia, duración) opcional
     var isLoadingRoute by remember { mutableStateOf(false) }
     var hasCenteredOnUser by remember { mutableStateOf(false) }
-    var followUser by remember { mutableStateOf(false) }
 
+// Follow con umbral / llegada
+    var followUser by remember { mutableStateOf(false) }
+    var lastFollowedPos by remember { mutableStateOf<LatLng?>(null) }
+    val FOLLOW_THRESHOLD_M = 6f
+    val ARRIVAL_RADIUS_M   = 15f
+
+// 4) Centrar SOLO la primera vez que llega ubicación
     LaunchedEffect(currentLatLng) {
         if (!hasCenteredOnUser) {
             currentLatLng?.let { here ->
@@ -91,58 +99,70 @@ fun MapScreen(
                     update = CameraUpdateFactory.newLatLngZoom(here, 17f),
                     durationMs = 600
                 )
-                hasCenteredOnUser = true  // 👈 no volver a centrar automáticamente
+                hasCenteredOnUser = true
             }
         }
     }
 
+// 5) Calcular ruta inteligente (Directions → Roads snap → recta)
     LaunchedEffect(destination, currentLatLng) {
         val origin = currentLatLng
         val dest = destination
         if (origin != null && dest != null && apiKey.isNotBlank()) {
             isLoadingRoute = true
-            val result = runCatching {
-                DirectionsService.fetchRoute(origin, dest, apiKey, mode = "walking")
-            }.getOrNull()
 
-            // si falla Directions, nos quedamos con la recta que pusimos en onMapClick
-            if (result != null && result.points.size >= 2) {
-                // guarda la ruta COMPLETA (sin recortar)
-                route = result.points
-                // si quieres encuadrar de una, descomenta:
-                // fitToRoute(result.points)
+            val smart = DirectionsService.fetchSmartRoute(
+                origin = origin,
+                destination = dest,
+                apiKey = apiKey,
+                mode = "walking"
+            )
+
+            if (smart.size >= 2) {
+                fullRoute = smart      // guarda la ruta completa
+                route = smart          // muestra completa al inicio
+                // routeSummary = result?.let { it.distanceText to it.durationText } // si lo expones desde tu service
+                // fitToRoute(smart) // opcional: encuadrar la ruta completa
+            } else {
+                fullRoute = listOf(origin, dest)
+                route = fullRoute
             }
+
             isLoadingRoute = false
         }
     }
 
-    // recorte dinámico según te mueves (sin volver a llamar Directions)
+// 6) Recorte dinámico según te mueves (SIEMPRE desde fullRoute)
     LaunchedEffect(currentLatLng) {
         val origin = currentLatLng
         val dest = destination
-        if (origin != null && dest != null) {
-            // si aún no hay ruta Directions, al menos mantén la recta:
-            if (route.size >= 2) {
-                // recorta la ruta para mostrar tramo restante
-                val remaining = remainingRouteFromPos(origin, route)
-                // OJO: si remaining termina muy pegado al destino, mantenlo (2 puntos)
-                if (remaining.size >= 2) {
-                    // pintamos el tramo restante
-                    route = remaining
-                } else {
-                    // mínimo línea recta como fallback
-                    route = listOf(origin, dest)
-                }
-            } else {
-                route = listOf(origin, dest)
-            }
+        if (origin != null && dest != null && fullRoute.size >= 2) {
+            val remaining = remainingRouteFromPos(origin, fullRoute)
+            route = if (remaining.size >= 2) remaining else listOf(origin, dest)
         }
     }
 
-    // efecto que mueve la cámara SOLO si followUser está activo
-    LaunchedEffect(currentLatLng, followUser) {
-        if (followUser && currentLatLng != null) {
-            cameraPositionState.move(CameraUpdateFactory.newLatLng(currentLatLng!!))
+// 7) Follow: mover cámara solo si avanzó (umbral) y detener al llegar
+    LaunchedEffect(currentLatLng, followUser, destination) {
+        val pos = currentLatLng ?: return@LaunchedEffect
+        if (!followUser) return@LaunchedEffect
+
+        // parar follow si ya estás muy cerca del destino
+        destination?.let { dest ->
+            if (distMeters(pos, dest) <= ARRIVAL_RADIUS_M) {
+                lastFollowedPos = null
+                // followUser = false // descomenta si quieres apagarlo automáticamente
+                return@LaunchedEffect
+            }
+        }
+
+        val movedEnough = lastFollowedPos == null || distMeters(lastFollowedPos!!, pos) >= FOLLOW_THRESHOLD_M
+        if (movedEnough) {
+            cameraPositionState.animate(
+                update = CameraUpdateFactory.newLatLng(pos),
+                durationMs = 300
+            )
+            lastFollowedPos = pos
         }
     }
 
@@ -297,6 +317,16 @@ private fun getMapsApiKey(context: Context): String {
     } catch (_: Exception) {
         ""
     }
+}
+
+private fun getWebApiKey(context: Context): String {
+    return try {
+        val ai = context.packageManager.getApplicationInfo(
+            context.packageName,
+            PackageManager.GET_META_DATA
+        )
+        ai.metaData.getString("com.example.naveventapp.WEB_API_KEY") ?: ""
+    } catch (_: Exception) { "" }
 }
 
 
