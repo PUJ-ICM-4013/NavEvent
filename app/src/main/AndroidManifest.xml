@@ -17,7 +17,6 @@
         android:name="android.hardware.sensor.ambient_temperature"
         android:required="false" />
 
-
     <application
         android:name=".App"
         android:allowBackup="true"
@@ -35,7 +34,7 @@
 
         <meta-data
             android:name="com.example.naveventapp.WEB_API_KEY"
-            android:value="$AIzaSyDHGKaaIikqUphuR-yt676QZhpQxIkJWhU"/> <!-- para Directions/Roads y weather -->
+            android:value="AIzaSyDHGKaaIikqUphuR-yt676QZhpQxIkJWhU"/> <!-- para Directions/Roads -->
 
         <activity
             android:name=".MainActivity"

@@ -40,7 +40,7 @@ object LocationTracker {
             }
         }
 
-        // Para LocationCallback se usa un Looper, no un Executor
+        // Para LocationCallback se usa un Looper
         client.requestLocationUpdates(request, callback, Looper.getMainLooper())
 
         awaitClose {
