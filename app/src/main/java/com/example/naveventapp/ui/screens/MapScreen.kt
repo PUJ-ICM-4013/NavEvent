@@ -35,26 +35,23 @@ import kotlinx.coroutines.Job
 import com.example.naveventapp.data.DirectionsService
 import com.example.naveventapp.utils.getMetaDataValue
 
-private fun Color.asHue(): Float {
-    val hsv = FloatArray(3)
-    android.graphics.Color.colorToHSV(this.toArgb(), hsv)
-    return hsv[0] // hue
-}
+private enum class RouteKind { STRAIGHT, DIRECTIONS }
+private enum class RouteSource { MAIN, POI }
 
 @Composable
 fun MapScreen(
+    initialDestination: LatLng? = null,
+    initialTitle: String? = null,
     onNavAgenda: () -> Unit = {},
     onNavQr: () -> Unit = {},
     onNavProfile: () -> Unit = {},
     onBellClick: () -> Unit = {}
 ) {
-    // --- contexto y scope
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-
-    // Key Web para Directions desde el Manifest
     val webApiKey = remember { getMetaDataValue(context, "com.example.naveventapp.WEB_API_KEY") }
 
+    // Estilo día/noche
     val isNight by isNightModeFlow(context).collectAsState(initial = false)
     val mapStyleOptions = remember(isNight) {
         try {
@@ -62,159 +59,187 @@ fun MapScreen(
                 context,
                 if (isNight) R.raw.map_style_night_clean else R.raw.map_style_day_clean
             )
-        } catch (_: Exception) {
-            null
-        }
+        } catch (_: Exception) { null }
     }
 
-    // === ubicación actual & permiso ===
+    // Ubicación & cámara
     val myLocationEnabled = rememberLocationPermission()
     val currentLatLng by produceState<LatLng?>(initialValue = null, key1 = myLocationEnabled) {
-        if (myLocationEnabled) {
-            LocationTracker.locationFlow(context).collect { value = it }
-        } else value = null
+        if (myLocationEnabled) LocationTracker.locationFlow(context).collect { value = it }
+        else value = null
     }
 
-    var destination by remember { mutableStateOf<LatLng?>(null) }
     var hasCenteredOnUser by remember { mutableStateOf(false) }
-
-    // === cámara ===
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(4.5981, -74.0760), 16f)
     }
-
-    // === brújula / autorotate ===
-    var autoRotate by remember { mutableStateOf(false) }
-    val azimuth by remember(context) { compassAzimuthFlow(context) }.collectAsState(initial = 0f)
-    var lastAppliedBearing by remember { mutableStateOf<Float?>(null) }
-    val bearingThresholdDeg = 5f
-
-    LaunchedEffect(autoRotate, azimuth) {
-        if (!autoRotate) return@LaunchedEffect
-        val currentBearing = azimuth
-        val last = lastAppliedBearing
-        val delta = if (last == null) 360f else kotlin.math.abs(currentBearing - last)
-        if (last == null || delta >= bearingThresholdDeg) {
-            val current = cameraPositionState.position
-            val newCam = CameraPosition(current.target, current.zoom, current.tilt, currentBearing)
-            cameraPositionState.animate(
-                update = CameraUpdateFactory.newCameraPosition(newCam),
-                durationMs = 180
-            )
-            lastAppliedBearing = currentBearing
-        }
-    }
-
-    // centrar una vez en el usuario
     LaunchedEffect(currentLatLng) {
         if (!hasCenteredOnUser) {
             currentLatLng?.let { here ->
-                cameraPositionState.animate(
-                    update = CameraUpdateFactory.newLatLngZoom(here, 17f),
-                    durationMs = 600
-                )
+                cameraPositionState.move(CameraUpdateFactory.newLatLngZoom(here, 17f))
                 hasCenteredOnUser = true
             }
         }
     }
 
-    // ====== Estado de la ruta (Directions) ======
-    var routePoints by remember { mutableStateOf<List<LatLng>>(emptyList()) }
-    var routeJob by remember { mutableStateOf<Job?>(null) }
-    val routeMode = "walking" // <-- modo fijo para eventos
+    val cameraMoveThresholdMeters = 15.0
+    LaunchedEffect(currentLatLng) {
+        val here = currentLatLng ?: return@LaunchedEffect
+        val curTarget = cameraPositionState.position.target
+        if (haversineMeters(curTarget, here) > cameraMoveThresholdMeters) {
+            cameraPositionState.animate(
+                CameraUpdateFactory.newLatLngZoom(here, cameraPositionState.position.zoom)
+            )
+        }
+    }
 
-    fun recomputeRoute(origin: LatLng, dest: LatLng) {
+    // Brújula
+    var autoRotate by remember { mutableStateOf(false) }
+    val azimuth by remember(context) { compassAzimuthFlow(context) }.collectAsState(initial = 0f)
+    var lastAppliedBearing by remember { mutableStateOf<Float?>(null) }
+    val bearingThresholdDeg = 5f
+    LaunchedEffect(autoRotate, azimuth) {
+        if (!autoRotate) return@LaunchedEffect
+        val cur = cameraPositionState.position
+        val curBearing = azimuth
+        val last = lastAppliedBearing
+        val delta = if (last == null) 360f else kotlin.math.abs(curBearing - last)
+        if (last == null || delta >= bearingThresholdDeg) {
+            cameraPositionState.animate(
+                CameraUpdateFactory.newCameraPosition(
+                    CameraPosition(cur.target, cur.zoom, cur.tilt, curBearing)
+                ),
+                180
+            )
+            lastAppliedBearing = curBearing
+        }
+    }
+
+    // ── Anchor de POIs (no se mueven salvo > 2 km) ──
+    val fallbackBogota = LatLng(4.5981, -74.0760)
+    var lockedCenter by remember { mutableStateOf<LatLng?>(null) }
+    val MOVE_THRESHOLD_METERS = 2000.0
+    LaunchedEffect(currentLatLng) {
+        val here = currentLatLng ?: return@LaunchedEffect
+        val anchor = lockedCenter
+        if (anchor == null) {
+            lockedCenter = here
+        } else if (haversineMeters(anchor, here) > MOVE_THRESHOLD_METERS) {
+            lockedCenter = here
+        }
+    }
+
+    // ── Ruta única + destino/target ──
+    var routeKind by remember { mutableStateOf(RouteKind.STRAIGHT) }
+    var routeSource by remember { mutableStateOf<RouteSource?>(null) }  // MAIN o POI
+    var routeTarget by remember { mutableStateOf<LatLng?>(null) }       // endpoint actual (destino o POI)
+    var destination by remember { mutableStateOf<LatLng?>(null) }       // solo para pintar marcador rojo cuando es MAIN
+    var routePoints by remember { mutableStateOf<List<LatLng>>(emptyList()) } // único polyline
+    var routeJob by remember { mutableStateOf<Job?>(null) }
+    val routeMode = "walking"
+
+    fun setRouteStraight(origin: LatLng?, dest: LatLng, source: RouteSource, showRedMarker: Boolean) {
         routeJob?.cancel()
+        routeKind = RouteKind.STRAIGHT
+        routeSource = source
+        routeTarget = dest
+        routePoints = if (origin != null) listOf(origin, dest) else emptyList()
+        destination = if (showRedMarker) dest else null
+    }
+
+    fun setRouteDirections(origin: LatLng?, dest: LatLng, source: RouteSource, showRedMarker: Boolean) {
+        routeJob?.cancel()
+        routeKind = RouteKind.DIRECTIONS
+        routeSource = source
+        routeTarget = dest
+        if (origin == null) {
+            routePoints = emptyList()
+            destination = if (showRedMarker) dest else null
+            return
+        }
+        if (webApiKey.isBlank()) {
+            setRouteStraight(origin, dest, source, showRedMarker)
+            return
+        }
+        destination = if (showRedMarker) dest else null
         routeJob = scope.launch {
             val res = DirectionsService.fetchRoute(
-                origin = origin,
-                destination = dest,
-                apiKey = webApiKey,
-                mode = routeMode,  // "walking"
-                language = "es",
-                region = "CO"
+                origin = origin, destination = dest,
+                apiKey = webApiKey, mode = routeMode, language = "es", region = "CO"
             )
-            if (res != null && res.points.size >= 2) {
-                routePoints = res.points
-            } else {
-                // fallback: línea recta
-                routePoints = listOf(origin, dest)
-            }
+            routePoints = if (res != null && res.points.size >= 2) res.points else listOf(origin, dest)
         }
     }
 
-    // Recalcular automáticamente si te mueves (y hay destino)
-    LaunchedEffect(currentLatLng, destination, webApiKey) {
-        val o = currentLatLng
-        val d = destination
-        if (o != null && d != null && webApiKey.isNotBlank()) {
-            recomputeRoute(o, d)
-        }
-    }
+    // ── POIs anclados ──
+    var activeTypes by remember { mutableStateOf<Set<String>>(emptySet()) }
+    fun toggleType(title: String) { activeTypes = if (title in activeTypes) activeTypes - title else activeTypes + title }
 
-    //Poi Y sus localizaciones en el mapa
-    var lockedCenter by remember { mutableStateOf<LatLng?>(null) }
-    val fallbackBogota = LatLng(4.5981, -74.0760)
-    val moveThresholdMeters = 2000.0
-
-    LaunchedEffect(currentLatLng) {
-        if (lockedCenter == null && currentLatLng != null) {
-            lockedCenter = currentLatLng
-        }
-    }
-
-    LaunchedEffect(currentLatLng, lockedCenter) {
-        val here = currentLatLng
-        val center = lockedCenter
-        if (here != null && center != null) {
-            val d = SphericalUtil.computeDistanceBetween(here, center)
-            if (d > moveThresholdMeters) {
-                lockedCenter = here
-                // Opcional: encuadrar nuevamente para ver POIs alrededor del nuevo centro
-                cameraPositionState.animate(
-                    update = CameraUpdateFactory.newLatLngZoom(here, 17f),
-                    durationMs = 500
-                )
-            }
-        }
-    }
-
-    val venueCenter: LatLng = lockedCenter ?: currentLatLng ?: fallbackBogota
-
-    // Lista de POIs (ejemplo; cambia coordenadas por las reales)
-    val defaultPois: List<Poi> = remember(venueCenter) {
+    val poiAnchor: LatLng = lockedCenter ?: currentLatLng ?: fallbackBogota
+    val defaultPois: List<Poi> = remember(poiAnchor) {
         listOf(
-            // STANDS: aumentamos distancias (en metros) y añadimos uno más
-            Poi(poiLegend[0], SphericalUtil.computeOffset(venueCenter,  60.0,  45.0), "Stand A"),
-            Poi(poiLegend[0], SphericalUtil.computeOffset(venueCenter,  90.0, 135.0), "Stand B"),
-            Poi(poiLegend[0], SphericalUtil.computeOffset(venueCenter, 120.0, 280.0), "Stand C"),
-            // BAÑOS
-            Poi(poiLegend[1], SphericalUtil.computeOffset(venueCenter,  110.0,   180.0), "Baño Norte"),
-            // ENTRADA / SALIDA
-            Poi(poiLegend[2], SphericalUtil.computeOffset(venueCenter, 70.0, 0.0), "Entrada Principal"),
-            // RESTAURANTE
-            Poi(poiLegend[3], SphericalUtil.computeOffset(venueCenter, 130.0, 260.0), "Restaurante 1"),
-            // INFO
-            Poi(poiLegend[4], SphericalUtil.computeOffset(venueCenter,  90.0,  90.0), "Punto de Información")
+            Poi(poiLegend[0], SphericalUtil.computeOffset(poiAnchor,  60.0,  45.0), "Stand A"),
+            Poi(poiLegend[0], SphericalUtil.computeOffset(poiAnchor,  90.0, 135.0), "Stand B"),
+            Poi(poiLegend[0], SphericalUtil.computeOffset(poiAnchor, 120.0, 280.0), "Stand C"),
+            Poi(poiLegend[1], SphericalUtil.computeOffset(poiAnchor, 110.0, 180.0), "Baño Norte"),
+            Poi(poiLegend[2], SphericalUtil.computeOffset(poiAnchor,  70.0,   0.0), "Entrada Principal"),
+            Poi(poiLegend[3], SphericalUtil.computeOffset(poiAnchor, 130.0, 260.0), "Restaurante 1"),
+            Poi(poiLegend[4], SphericalUtil.computeOffset(poiAnchor,  90.0,  90.0), "Punto de Información")
         )
     }
 
-// Filtro por tipo (para activar/desactivar desde la leyenda)
-    //  Por defecto: ningún tipo activo (leyenda desactivada)
-    var activeTypes by remember { mutableStateOf<Set<String>>(emptySet()) }
-    fun toggleType(title: String) {
-        activeTypes = if (title in activeTypes) activeTypes - title else activeTypes + title
+    // Al cambiar la leyenda: si la ruta actual es hacia un POI oculto → borra polyline
+    LaunchedEffect(activeTypes, defaultPois) {
+        if (routeSource == RouteSource.POI && routeTarget != null) {
+            val visiblePoiPositions = defaultPois
+                .filter { it.type.title in activeTypes }
+                .map { it.position }
+                .toSet()
+            if (routeTarget !in visiblePoiPositions) {
+                routePoints = emptyList()
+                routeTarget = null
+                routeSource = null
+                // destination se deja como está; solo se usa para rutas MAIN
+            }
+        }
     }
 
-    // POI seleccionado para trazar línea recta desde tu ubicación
-    var selectedPoi by remember { mutableStateOf<Poi?>(null) }
-
-// Si apagas un tipo en la leyenda y el POI seleccionado pertenece a ese tipo, limpia la selección
-    LaunchedEffect(activeTypes) {
-        if (selectedPoi?.type?.title !in activeTypes) selectedPoi = null
+    // Ruta inicial desde Agenda (solo una vez)
+    var initialRouteApplied by remember { mutableStateOf(false) }
+    LaunchedEffect(initialDestination, currentLatLng) {
+        if (!initialRouteApplied && initialDestination != null && currentLatLng != null) {
+            setRouteStraight(currentLatLng, initialDestination, RouteSource.MAIN, showRedMarker = true)
+            initialRouteApplied = true
+        }
     }
 
-    // ====== UI ======
+    // ── “Recorte” dinámico con ubicación actual (aplica para MAIN y POI) ──
+    val RECALC_DEVIATION_METERS = 35.0
+    LaunchedEffect(currentLatLng) {
+        val here = currentLatLng ?: return@LaunchedEffect
+        val target = routeTarget ?: return@LaunchedEffect
+        if (routePoints.size < 2) return@LaunchedEffect
+
+        when (routeKind) {
+            RouteKind.STRAIGHT -> {
+                // Recta viva: orígen se mueve contigo
+                routePoints = listOf(here, target)
+            }
+            RouteKind.DIRECTIONS -> {
+                val trim = trimRouteToCurrent(routePoints, here)
+                routePoints = trim.points
+                if (trim.deviationMeters > RECALC_DEVIATION_METERS) {
+                    setRouteDirections(
+                        here, target,
+                        source = (routeSource ?: RouteSource.MAIN),
+                        showRedMarker = (routeSource == RouteSource.MAIN)
+                    )
+                }
+            }
+        }
+    }
+
+    // ── UI ──
     Box(
         Modifier
             .fillMaxSize()
@@ -248,76 +273,57 @@ fun MapScreen(
                         tiltGesturesEnabled = true,
                     ),
                     onMapClick = { latLng ->
-                        selectedPoi = null
-                        destination = latLng
-                        // calcular ruta si hay origen
-                        val origin = currentLatLng
-                        if (origin != null && webApiKey.isNotBlank()) {
-                            recomputeRoute(origin, latLng)
-                        } else {
-                            routePoints = if (origin != null) listOf(origin, latLng) else emptyList()
-                        }
+                        // Reemplaza ruta actual → Directions viva (MAIN)
+                        setRouteDirections(currentLatLng, latLng, RouteSource.MAIN, showRedMarker = true)
                     },
                     onMapLongClick = {
-                        selectedPoi = null
-                        //Limpia destino y ruta con un long-press
                         destination = null
                         routePoints = emptyList()
+                        routeJob?.cancel()
+                        routeKind = RouteKind.STRAIGHT
+                        routeSource = null
+                        routeTarget = null
                     },
                 ) {
-                    // Polyline de la ruta
+                    // Polyline único
                     if (routePoints.size >= 2) {
                         Polyline(
                             points = routePoints,
-                            width = 12f, // más gruesa
-                            color = Color(0xFF0D47A1), // azul fuerte
-                            geodesic = true
+                            width = 12f,
+                            color = Color(0xFF0D47A1),
+                            geodesic = true,
+                            zIndex = 1f
                         )
                     }
 
+                    // POIs anclados
                     defaultPois
-                        .filter { poi -> poi.type.title in activeTypes }
+                        .filter { it.type.title in activeTypes }
                         .forEach { poi ->
-                            val markerState = remember(poi) { MarkerState(position = poi.position) }
-
                             Marker(
-                                state = markerState,
-                                // ⚠️ Evita InfoWindow por ahora (algunas builds crashean con title/snippet)
-                                // title = poi.label ?: poi.type.title,
-                                // snippet = poi.type.title,
+                                state = MarkerState(position = poi.position),
                                 icon = BitmapDescriptorFactory.defaultMarker(poi.type.color.asHue()),
                                 onClick = {
-                                    // Solo seleccionamos si ya tenemos ubicación
-                                    if (currentLatLng != null) {
-                                        selectedPoi = poi
-                                    }
-                                    true // ✅ consumimos el evento → NO abre InfoWindow
+                                    // Recta viva al POI (sin marcador rojo) → reemplaza polyline
+                                    setRouteStraight(currentLatLng, poi.position, RouteSource.POI, showRedMarker = false)
+                                    true
                                 }
                             )
                         }
 
-                    val here = currentLatLng
-                    val poiSel = selectedPoi
-                    if (here != null && poiSel != null) {
-                        Polyline(
-                            points = listOf(here, poiSel.position),
-                            width = 12f, // más gruesa
-                            color = Color(0xFF0D47A1), // azul fuerte
-                            geodesic = true
-                        )
-                    }
-
-                    // Destino (rojo)
-                    destination?.let {
+                    // Marcador rojo (solo para rutas MAIN)
+                    val dest = destination
+                    val destState = remember(dest) { dest?.let { MarkerState(position = it) } }
+                    if (destState != null) {
                         Marker(
-                            state = MarkerState(position = it),
-                            title = "Destino",
+                            state = destState,
+                            title = initialTitle ?: "Destino",
                             icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED)
                         )
                     }
                 }
 
-                // Overlay de brújula
+                // Brújula
                 CompassOverlay(
                     azimuthDeg = azimuth,
                     autoRotate = autoRotate,
@@ -328,6 +334,7 @@ fun MapScreen(
                 )
             }
 
+            // Leyenda
             LegendBar(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -355,11 +362,89 @@ fun MapScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding(),
-            onMap = { /* ya estás en el mapa */ },
+            onMap = { /* ya estás */ },
             onAgenda = onNavAgenda,
             onQr = onNavQr,
             onProfile = onNavProfile
         )
     }
 }
+
+/* ================== Helpers ================== */
+
+private fun Color.asHue(): Float {
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(this.toArgb(), hsv)
+    return hsv[0]
+}
+
+private fun haversineMeters(a: LatLng, b: LatLng): Double {
+    val R = 6371000.0
+    val dLat = Math.toRadians(b.latitude - a.latitude)
+    val dLon = Math.toRadians(b.longitude - a.longitude)
+    val lat1 = Math.toRadians(a.latitude)
+    val lat2 = Math.toRadians(b.latitude)
+    val sinDLat = kotlin.math.sin(dLat / 2)
+    val sinDLon = kotlin.math.sin(dLon / 2)
+    val h = sinDLat * sinDLat + kotlin.math.cos(lat1) * kotlin.math.cos(lat2) * sinDLon * sinDLon
+    return 2 * R * kotlin.math.asin(kotlin.math.sqrt(h))
+}
+
+private data class TrimResult(val points: List<LatLng>, val deviationMeters: Double)
+
+/**
+ * Recorta una polyline para que inicie en la ubicación actual:
+ * - Busca el segmento más cercano a 'here'
+ * - Descarta puntos anteriores
+ * - Inserta 'here' como nuevo primer punto
+ * Retorna también cuánto te desviaste de la ruta (para posible recalculo).
+ */
+private fun trimRouteToCurrent(route: List<LatLng>, here: LatLng): TrimResult {
+    if (route.size < 2) return TrimResult(route, 0.0)
+
+    var bestIdx = 0
+    var bestDev = Double.MAX_VALUE
+
+    for (i in 0 until route.size - 1) {
+        val a = route[i]
+        val b = route[i + 1]
+        val dev = pointToSegmentDistanceMeters(here, a, b)
+        if (dev < bestDev) {
+            bestDev = dev
+            bestIdx = i
+        }
+    }
+
+    val trimmed = ArrayList<LatLng>(route.size - bestIdx)
+    trimmed.add(here)
+    for (j in (bestIdx + 1) until route.size) trimmed.add(route[j])
+
+    return TrimResult(trimmed, bestDev)
+}
+
+/** Distancia punto–segmento aproximada en metros (proyección local 2D). */
+private fun pointToSegmentDistanceMeters(p: LatLng, a: LatLng, b: LatLng): Double {
+    val ax = lonToMeters(a.longitude, a.latitude)
+    val ay = latToMeters(a.latitude)
+    val bx = lonToMeters(b.longitude, a.latitude)
+    val by = latToMeters(b.latitude)
+    val px = lonToMeters(p.longitude, a.latitude)
+    val py = latToMeters(p.latitude)
+
+    val abx = bx - ax
+    val aby = by - ay
+    val apx = px - ax
+    val apy = py - ay
+    val ab2 = abx * abx + aby * aby
+    val t = if (ab2 == 0.0) 0.0 else ((apx * abx + apy * aby) / ab2).coerceIn(0.0, 1.0)
+    val cx = ax + t * abx
+    val cy = ay + t * aby
+    val dx = px - cx
+    val dy = py - cy
+    return kotlin.math.sqrt(dx * dx + dy * dy)
+}
+
+private fun latToMeters(lat: Double): Double = lat * 111_320.0
+private fun lonToMeters(lon: Double, atLat: Double): Double =
+    lon * (111_320.0 * kotlin.math.cos(Math.toRadians(atLat)))
 

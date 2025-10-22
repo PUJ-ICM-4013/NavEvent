@@ -1,15 +1,14 @@
 package com.example.naveventapp.ui.nav
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.example.naveventapp.ui.screens.*
+import com.google.android.gms.maps.model.LatLng
 
 @Composable
 fun AppNavHost(modifier: Modifier = Modifier) {
@@ -41,8 +40,22 @@ fun AppNavHost(modifier: Modifier = Modifier) {
             )
         }
 
-        composable(AppRoute.Map.route) {
+        // Map con args opcionales
+        composable(
+            route = "map?lat={lat}&lng={lng}&title={title}",
+            arguments = listOf(
+                navArgument("lat")   { type = NavType.StringType; nullable = true; defaultValue = null },
+                navArgument("lng")   { type = NavType.StringType; nullable = true; defaultValue = null },
+                navArgument("title") { type = NavType.StringType; nullable = true; defaultValue = null },
+            )
+        ) { backStackEntry ->
+            val lat = backStackEntry.arguments?.getString("lat")?.toDoubleOrNull()
+            val lng = backStackEntry.arguments?.getString("lng")?.toDoubleOrNull()
+            val title = backStackEntry.arguments?.getString("title")
+
             MapScreen(
+                initialDestination = if (lat != null && lng != null) LatLng(lat, lng) else null,
+                initialTitle = title,
                 onNavAgenda = { nav.navigate(AppRoute.Agenda.route) },
                 onNavQr = { nav.navigate(AppRoute.Qr.route) },
                 onNavProfile = { nav.navigate(AppRoute.Profile.route) },
@@ -53,7 +66,7 @@ fun AppNavHost(modifier: Modifier = Modifier) {
         composable(AppRoute.Qr.route) {
             QrScreen(
                 qrContent = """{"evento":"FeriaBogotá2025","stand":"InnovaciónGastronómica","zona":"B"}""",
-                onNavMap = { nav.navigate(AppRoute.Map.route) },         // 👈 ahora sí existe
+                onNavMap = { nav.navigate(AppRoute.Map.route) },
                 onNavAgenda = { nav.navigate(AppRoute.Agenda.route) },
                 onNavProfile = { nav.navigate(AppRoute.Profile.route) },
                 onBellClick   = { nav.navigate(AppRoute.Notifications.route) }
@@ -62,6 +75,9 @@ fun AppNavHost(modifier: Modifier = Modifier) {
 
         composable(AppRoute.Agenda.route) {
             AgendaScreen(
+                onOpenMapTo = { latLng, title ->
+                    nav.navigate(AppRoute.mapWith(latLng.latitude, latLng.longitude, title))
+                },
                 onNavMap = { nav.navigate(AppRoute.Map.route) },
                 onNavQr = { nav.navigate(AppRoute.Qr.route) },
                 onNavProfile = { nav.navigate(AppRoute.Profile.route) },
@@ -75,7 +91,7 @@ fun AppNavHost(modifier: Modifier = Modifier) {
                 onNavAgenda = { nav.navigate(AppRoute.Agenda.route) },
                 onNavQr = { nav.navigate(AppRoute.Qr.route) },
                 onBellClick = { nav.navigate(AppRoute.Notifications.route) },
-                onSave = { email, phone -> /* guardar cambios */ }
+                onSave = { _, _ -> }
             )
         }
 
@@ -85,11 +101,19 @@ fun AppNavHost(modifier: Modifier = Modifier) {
                 onNavAgenda = { nav.navigate(AppRoute.Agenda.route) },
                 onNavQr = { nav.navigate(AppRoute.Qr.route) },
                 onNavProfile = { nav.navigate(AppRoute.Profile.route) },
-                onBellClick = { /* ya estás aquí */ }
+                onBellClick = { /* ya aquí */ }
             )
         }
     }
 }
 
-
+@Composable
+fun MapScreen(
+    onNavAgenda: () -> Unit,
+    onNavQr: () -> Unit,
+    onNavProfile: () -> Unit,
+    onBellClick: () -> Unit
+) {
+    TODO("Not yet implemented")
+}
 
