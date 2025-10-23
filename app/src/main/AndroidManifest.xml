@@ -30,11 +30,11 @@
 
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="AIzaSyAcPIChbOpbtwCthJryQij5Jmt6KBqDT4w"/> <!-- para el mapa -->
+            android:value="AIzaSyAcPIChbOpbtwCthJryQij5Jmt6KBqDT4w"/> <!-- para el mapa (cambiarlo para probar el local.properties)-->
 
         <meta-data
             android:name="com.example.naveventapp.WEB_API_KEY"
-            android:value="AIzaSyDHGKaaIikqUphuR-yt676QZhpQxIkJWhU"/> <!-- para Directions/Roads -->
+            android:value="AIzaSyDHGKaaIikqUphuR-yt676QZhpQxIkJWhU"/> <!-- para Directions/Roads (cambiarlo para probar el local.properties)-->
 
         <activity
             android:name=".MainActivity"
