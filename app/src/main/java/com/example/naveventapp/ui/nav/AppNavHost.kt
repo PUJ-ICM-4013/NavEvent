@@ -28,7 +28,12 @@ fun AppNavHost(modifier: Modifier = Modifier) {
 
         composable(AppRoute.Login.route) {
             LogInScreen(
-                onLogin = { _, _, _ -> nav.navigate(AppRoute.Map.route) },
+                onLoginSuccess = { uid ->
+                    // navega donde quieras tras login OK
+                    nav.navigate(AppRoute.Map.route) {
+                        popUpTo(AppRoute.Login.route) { inclusive = true } // opcional: sacar login del back stack
+                    }
+                },
                 onCreateAccountClick = { nav.navigate(AppRoute.SignIn.route) }
             )
         }

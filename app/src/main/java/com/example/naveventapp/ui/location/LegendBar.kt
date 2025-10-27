@@ -1,10 +1,12 @@
 package com.example.naveventapp.ui.location
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -14,6 +16,9 @@ import androidx.compose.ui.unit.dp
 import com.example.naveventapp.ui.theme.GrisOscuro
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+
+
 fun LegendBar(
     modifier: Modifier = Modifier,
     items: List<PoiType> = poiLegend,
