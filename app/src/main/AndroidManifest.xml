@@ -17,6 +17,13 @@
         android:name="android.hardware.sensor.ambient_temperature"
         android:required="false" />
 
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!-- Para Android 13+ (READ_MEDIA_IMAGES) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
     <application
         android:name=".App"
         android:allowBackup="true"
